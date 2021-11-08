@@ -1,0 +1,503 @@
+---
+title: "Assignment 2: Analyzing Education Outcomes in San Mateo County `r format(Sys.Date(), '%B %d, %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+The following report examines the educational outcomes in San Mateo County within the Bay Area of California.  The report analyzes 2018 and 2019 census data to draw conclusions about racial equity in educational attainment in San Mateo County, assess internet access among county residents relative to the rest of the Bay Area, and examine education mobility in the county (accounting for inflow and outflow of individuals from the county).
+
+```{r}
+
+library(tidyverse)
+library(sf)
+library(tigris)
+library(leaflet)
+library(censusapi)
+
+Sys.setenv(CENSUS_KEY="c32328d3e656a329d36a0b9e0851276e9dcb731a")
+
+acs_vars_2018_5yr <-
+  listCensusMetadata(
+    name = "2018/acs/acs5",
+    type = "variables"
+  )
+```
+
+
+Individuals 25 and older that identify as a race other than "White Alone" or Asian Alone" make up 17 percent of the population of San Mateo County, but makeup 32 percent of the population over 25 years old with a high school degree (or equivalent) or less.  If there were equitable opportunities for educational attainment we would expect these numbers to be more similar. Minority groups that do not identify as "White Only" or "Asian Only" are 89 percent more likely to attain only a high school diploma, equivalent, or less.
+
+
+```{r}
+
+library(tidyverse)
+library(sf)
+library(tigris)
+library(leaflet)
+library(censusapi)
+
+census_race_labels <- 
+  c(
+    "White Alone",
+    "Black or African American",
+    "American Indian and Alaska Native Alone",
+    "Asian Alone",
+    "Native Hawaiian and Other Pacific Islander Alone)",
+    "Some Other Race Alone",
+    "Two or More Races"
+  )
+
+smc_education_race <-
+  1:7 %>% 
+  map_dfr(function(x){
+    getCensus(
+      name = "acs/acs5",
+      vintage = 2018,
+      region = "county:081",
+      regionin = "state:06",
+      vars = paste0("group(C15002",LETTERS[x],")")
+    ) %>%
+      select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA","M"))) %>%
+      pivot_longer(
+        ends_with("E"),
+        names_to = "variable",
+        values_to = "estimate"
+      ) %>%
+      left_join(
+        acs_vars_2018_5yr %>% 
+          select(name, label), 
+        by = c("variable" = "name")
+      ) %>% 
+      select(-variable) %>% 
+      separate(
+        label,
+        into = c(NA,NA,"sex","education"),
+        sep = "!!"
+      ) %>% 
+      filter(!is.na(education)) %>% 
+      mutate(race = census_race_labels[x])
+  })
+
+smc_group_edu_race <-
+  group_by(
+    smc_education_race,
+    county,
+    education,
+    race
+  )
+
+smc_edu_summarize <-
+  summarize(
+    smc_group_edu_race,
+    estimate = 
+      sum(
+        estimate, 
+        na.rm = T
+      )
+  )
+
+smc_edu_summarize %>% 
+  group_by(education, race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = education %>% factor(levels = smc_education_race$education[1:4]),
+      y = estimate,
+      fill = race
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "Educational attainment (25 years+)",
+    y = "Number of individuals",
+    title = "San Mateo County educational attainment by race (25 years+)",
+    fill = "Race of householder"
+  ) +
+  coord_flip()
+
+smc_race_total <-
+  smc_edu_summarize %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(education = "Total")
+
+smc_edu_summarize %>% 
+  group_by(education, race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  rbind(smc_race_total) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = education %>% factor(
+        levels = rev(
+          c("Total",smc_education_race$education[1:4]))),
+      y = estimate,
+      fill = race
+    ),
+    stat = "identity",
+    position = "fill"
+  ) +
+  labs(
+    x = "Educational attainment (25 years+)",
+    y = "Proportion of individuals",
+    title = "San Mateo County educational attainment by race (25 years+)",
+    fill = "Race of householder"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+
+(((sum(smc_race_total$estimate[3:6])+smc_race_total$estimate[1])/sum(smc_race_total$estimate))*100) %>% round()
+
+((smc_edu_summarize %>% 
+    filter(education %in% c(
+      "Less than high school diploma", 
+      "High school graduate (includes equivalency)")) %>% 
+    filter(race != "White Alone") %>%
+    filter(race != "Asian Alone") %>%
+    pull(estimate) %>% 
+    sum()) /
+    (smc_edu_summarize %>% 
+    filter(education %in% c(
+      "Less than high school diploma", 
+      "High school graduate (includes equivalency)")) %>% 
+    pull(estimate) %>% 
+    sum()) * 100) %>% 
+  round()
+
+((((smc_edu_summarize %>% 
+      filter(education %in% c(
+        "Less than high school diploma", 
+        "High school graduate (includes equivalency)")) %>% 
+      filter(race != "White Alone") %>%
+      filter(race != "Asian Alone") %>%
+      pull(estimate) %>% 
+      sum()) /
+     (smc_edu_summarize %>% 
+        filter(education %in% c(
+          "Less than high school diploma", 
+          "High school graduate (includes equivalency)")) %>% 
+        pull(estimate) %>% 
+        sum())) / 
+    ((sum(smc_race_total$estimate[3:6])+smc_race_total$estimate[1])/
+       sum(smc_race_total$estimate)) - 1) * 100) %>% 
+  round()
+
+
+```
+
+To analyze the percentage of K12 students in the Bay Area without internet access by county, I only used PUMS data that specified "No access" compared to the total number of households with K12 students.  This means that households without data on internet access were included in the total student numbers (equating to an assumption of internet access as a default). 
+
+
+```{r}
+
+library(tidyverse)
+library(tidycensus)
+library(sf)
+library(tigris)
+library(leaflet)
+
+census_api_key("c32328d3e656a329d36a0b9e0851276e9dcb731a", install = TRUE, overwrite = TRUE)
+
+readRenviron("~/.Renviron")
+
+pums_vars_2019 <- pums_variables %>% 
+  filter(year == 2019, survey == "acs1")
+
+pums_vars_2019_distinct_person <- 
+  pums_vars_2019 %>%
+  distinct(var_code, var_label, data_type, level) %>% 
+  filter(level == "person")
+
+pums_vars_2019_distinct_hh <- 
+  pums_vars_2019 %>%
+  distinct(var_code, var_label, data_type, level) %>% 
+  filter(level == "housing")
+
+ca_pums <- get_pums(
+  variables = c(
+    "PUMA",
+    "ACCESS",
+    "SCHG"
+  ),
+  state = "CA",
+  year = 2019,
+  survey = "acs1",
+  recode = T
+)
+
+saveRDS(ca_pums, "ca_pums.rds")
+
+ca_pumas <-
+  pumas("CA", cb = T, progress_bar = F)
+
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+ggplot(bay_counties) + geom_sf()
+
+bay_pumas <-
+  ca_pumas %>% 
+  st_centroid() %>% 
+  .[bay_counties, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(ca_pumas %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+bay_pums <-
+  ca_pums %>% 
+  filter(PUMA %in% bay_pumas$PUMACE10)
+
+bay_pums_K12 <-
+  filter(
+    bay_pums,
+    SCHG_label %in%
+      c(
+        "Kindergarten",
+        "Grade 1",
+        "Grade 2",
+        "Grade 3",
+        "Grade 4",
+        "Grade 5",
+        "Grade 6",
+        "Grade 7",
+        "Grade 8",
+        "Grade 9",
+        "Grade 10",
+        "Grade 11",
+        "Grade 12"
+        )
+  )
+
+bay_pums_access <-
+  bay_pums_K12 %>% 
+  filter(!duplicated(SERIALNO)) %>% 
+  mutate(
+    K12_no_access = ifelse(
+      (ACCESS_label == 
+         "No access to the Internet at this house, apartment, or mobile home"),
+      WGTP,
+      0
+    )
+  ) %>% 
+  group_by(PUMA) %>% 
+  summarize(
+    perc_K12_no_access =
+      sum(K12_no_access, na.rm =T)/sum(WGTP, na.rm = T)*100
+  ) %>% 
+  left_join(
+    bay_pumas %>% 
+      select(PUMACE10),
+    by = c("PUMA" = "PUMACE10")
+  ) %>% 
+  st_as_sf()
+
+pums_pal <- colorNumeric(
+  palette = "Oranges",
+  domain = bay_pums_access$perc_K12_no_access
+)
+
+leaflet() %>%
+  addTiles() %>% 
+  addPolygons(
+    data = bay_pums_access,
+    fillColor = ~pums_pal(perc_K12_no_access),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.5,
+    weight = 1,
+    label = ~paste0(
+      round(perc_K12_no_access), 
+      "% K12 students with no internet access at home"
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = bay_pums_access,
+    pal = pums_pal,
+    values = ~perc_K12_no_access,
+    title = "% K12 students with no internet access at home"
+  )
+
+```
+
+
+The vast majority of K12 students in the Bay Area have access to the internet at their household.  In San Mateo county only approximately between 2-6 percent of students do not have access to the internet at home.  However, those students without internet access are likely have significant challenges in accessing remote learning platforms.  In addition, simply assessing internet access does not provide a full picture of the quality of a learning environment. The map and percentages calculated do not provide insights into the quality of the internet connection (e.g. speed and service disruptions).  In addition, possession of a computer accessible to the child, as well as factors such as noise and other disruptions could influence the ability of students to access course material and complete assignments.
+
+
+
+```{r}
+
+library(tidyverse)
+library(censusapi)
+
+Sys.setenv(CENSUS_KEY="c32328d3e656a329d36a0b9e0851276e9dcb731a")
+
+acs_vars_2019_1yr <-
+  listCensusMetadata(
+    name = "2019/acs/acs1",
+    type = "variables"
+  )
+
+smc_mobility_current_19 <- 
+  getCensus(
+    name = "acs/acs1",
+    vintage = 2019,
+    region = "county:081",
+    regionin = "state:06",
+    vars = c("group(B07009)")
+  ) %>% 
+  select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_1yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"temp","education","mobility"),
+    sep = "!!"
+  )%>%
+  filter(!is.na(education))%>%
+  mutate(
+    mobility = ifelse(
+      temp %in% c("Same house 1 year ago:", "Moved within same county:"),
+      "Here since last year",
+      "Inflow")
+  ) %>%
+  group_by(mobility, education) %>% 
+  summarize(estimate = sum(estimate))
+  
+
+smc_mobility_lastyear_19 <- 
+  getCensus(
+    name = "acs/acs1",
+    vintage = 2019,
+    region = "county:081",
+    regionin = "state:06",
+    vars = c("group(B07409)")
+  ) %>% 
+  select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_1yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"temp","education","mobility"),
+    sep = "!!"
+  )%>%
+  filter(!is.na(education))%>%
+  mutate(
+    mobility = ifelse(
+      temp %in% c("Same house:", "Moved within same county:"),
+      "Here since last year",
+      "Outflow"
+      )
+    ) %>%
+  group_by(mobility, education) %>% 
+  summarize(estimate = sum(estimate))
+
+smc_mobility_current_18 <- 
+  getCensus(
+    name = "acs/acs1",
+    vintage = 2018,
+    region = "county:081",
+    regionin = "state:06",
+    vars = c("group(B07009)")
+  ) %>% 
+  select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_1yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable)%>% 
+  separate(
+    label,
+    into = c(NA,NA,"temp","education","mobility"),
+    sep = "!!"
+  )%>%
+  filter(!is.na(education))%>%
+  mutate(
+    mobility = "Here last year"
+  ) %>%
+  group_by(mobility, education) %>% 
+  summarize(estimate = sum(estimate))
+
+smc_flows_19 <-
+  rbind(
+    smc_mobility_current_18,
+    smc_mobility_lastyear_19 %>% 
+      filter(mobility == "Outflow"),
+    smc_mobility_current_19 %>% 
+      filter(mobility == "Inflow"),
+    smc_mobility_current_19 %>% 
+      group_by(education) %>% 
+      summarize(estimate = sum(estimate)) %>% 
+      mutate(mobility = "Here this year")
+  ) %>% 
+  pivot_wider(
+    names_from = mobility,
+    values_from = estimate
+  ) %>% 
+  mutate(
+    `External net` = Inflow - Outflow,
+    `Internal net` = `Here this year` - `Here last year` - `External net`,
+  ) %>% 
+  select(
+    `Educational attainment` = education, 
+    `Internal net`,
+    `External net`,
+    `Here last year`, 
+    `Here this year`, 
+    Outflow, 
+    Inflow
+  )
+
+smc_flows_19
+
+```
+
+There appears to be some degree of educational mobility in San Mateo County.  There is an internal net decrease in "Less than high school" residents. Some of that decrease relates to migration, but a significant portion is related to an internal net change - perhaps more people completing their high school education relative to in the past.  There is an observed internal net increase in students with a high school education, some college or associate's degree, and graduate or professional degrees.  There is however, a large decrease in internal net change for individuals with bachelor degrees, as well as external net change.  This could mean that individuals with bachelors degrees are leaving the county to find work.  In addition, while some of the internal net decrease in individuals with bachelor's degrees could relate to individuals going on to achieve graduate degrees, likely some of the large increase in "high school graduates" and corresponding large decrease in "bachelor's degree" reflects individuals stopping their education at the high school level, rather than continuing to achieve a bachelor's degree.
